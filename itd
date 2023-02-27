@@ -1,0 +1,538 @@
+#!/bin/bash
+############################################################
+#Purpose        : Queries SAECL DB and creates a CSV for geneos
+#Author         : Kabilarajah Yuvarajah
+#Date           : 2022 OCT 24 - OCT 28
+#Version        : 2.1
+############################################################
+
+#Location Details
+
+#SCR_LOC="/var/tmp/dashboard/ecp_dashboard"
+SCR_LOC="/lch/plex06/geneos_resources/app_scripts/ecp_dashboard"
+ITD_t_FILE="$SCR_LOC/file_status_check.config"
+CURRENT_DATE=`date '+%d-%^b-%Y'`
+CURRENT_TIME=`date +%H%M`
+#CURRENT_DATE='26-OCT-2022'
+#email_ids="kabilarajah.yuvarajah@lseg.com,eshan.weerasinghe@lseg.com"
+email_ids="BSL-FLR@lch.com,sa.ecl.risk.monitoring@lseg.com"
+
+
+sh $SCR_LOC/saecl_lex_check.sh
+
+
+rm -rf $SCR_LOC/results/itd_run_results.csv
+
+#sets the current date based on time
+        if [[ 10#$CURRENT_TIME  -le 10#0400 ]] ; then
+          CURRENT_DATE=`date -d "-1 day" '+%d-%^b-%Y'`
+          echo $CURRENT_DATE
+
+        else
+	  CURRENT_DATE=`date '+%d-%^b-%Y'`
+	  echo $CURRENT_DATE
+        fi
+
+
+
+#CURRENT_DATE='16-JAN-2023'
+echo --------------------------
+
+
+
+#gets db credentials extracted from config file
+grep -h "MLM_DB_Details" $SCR_LOC/*.config > $SCR_LOC/config/db_details
+
+#Reads the config file for the db credentials and other relavent details
+while IFS=',' read -r col CREDENTIAL VALUES; do
+  declare "$CREDENTIAL"="$VALUES"
+done < $SCR_LOC/config/db_details
+
+SEND_TO_CSV="$SCR_LOC/config/query_tmp.csv"
+
+##Check Margin Status
+V_MR_STATUS_B=$(sqlplus -s "$USER_NAME/$PASSWORD@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(Host=$HOST)(Port=$PORT))(CONNECT_DATA=(SERVICE_NAME=$SERVICE_NAME)))" << EOF
+
+set serveroutput on
+set heading off
+set colsep ,
+SET ECHO OFF
+SET VERIFY OFF
+SET TRIMSPOOL ON
+SET TRIMOUT ON
+SET LINESIZE 9999
+SET PAGESIZE 0
+SET FEEDBACK OFF
+SET TIMING OFF
+SET TIME OFF
+SET LONG 10000
+WHENEVER OSERROR EXIT FAILURE
+spool $SEND_TO_CSV
+
+select * from (select DAY_PERIOD_TYPE,END_TIME,TRADE_DATA,STATUS from $SCHEMA.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' order by END_TIME DESC);
+
+--- select * from (select * from MLMEP01.MARGIN_RUN where BUSINESS_DATE='29-JUN-2022' order by END_TIME);
+
+spool off
+exit;
+EOF
+)
+
+echo $V_MR_STATUS_B
+
+#echo "select DAY_PERIOD_TYPE,END_TIME,TRADE_DATA,STATUS from $SCHEMA.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' order by END_TIME DESC"
+
+#does the necessary partition works & removals
+cat $SCR_LOC/config/query_tmp.csv | awk '$1=$1' | tee $SCR_LOC/config/query_out > /dev/null
+#cat $SCR_LOC/config/query_tmp.csv | awk '$1=$1'
+
+rm -rf $SCR_LOC/config/query_tmp.csv
+
+
+#Function for getting the LAT statuses
+
+func_get_from_lat()
+{
+
+#echo $1
+pre=$(echo $1 | cut -c -3)
+post=$(echo $1 | cut -c 4-)
+#echo $pre $post
+#pre=E2D
+	if [[ $pre == EOD ]] ; then
+	  cy_code="AND CYCLE_CODE IS NULL"
+      	 # echo EOD
+
+	elif [[ $pre == ITD ]]; then
+          cy_code="AND CYCLE_CODE=$post"
+         # echo ITD
+
+	else
+		cy_code="AND CYCLE_CODE=1"
+	#	echo SUB RUNS
+	
+	fi
+
+
+#echo "select STATUS from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE"
+
+#gets db credentials extracted from config file
+grep -h "LAT_DB_Details" $SCR_LOC/*.config > $SCR_LOC/config/db_details
+
+#Reads the config file for the db credentials and other relavent details
+while IFS=',' read -r col CREDENTIAL VALUES; do
+  declare "$CREDENTIAL"="$VALUES"
+done < $SCR_LOC/config/db_details
+
+SEND_TO_CSV="$SCR_LOC/config/query_tmp.csv"
+
+##Check Margin Status
+V_MR_STATUS_B=$(sqlplus -s "$USER_NAME/$PASSWORD@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(Host=$HOST)(Port=$PORT))(CONNECT_DATA=(SERVICE_NAME=$SERVICE_NAME)))" << EOF
+
+set serveroutput on
+set heading off
+set colsep ,
+SET ECHO OFF
+SET VERIFY OFF
+SET TRIMSPOOL ON
+SET TRIMOUT ON
+SET LINESIZE 9999
+SET PAGESIZE 0
+SET FEEDBACK OFF
+SET TIMING OFF
+SET TIME OFF
+SET LONG 10000
+WHENEVER OSERROR EXIT FAILURE
+spool $SEND_TO_CSV
+
+
+---select * from (select * from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE DESC FETCH FIRST 1 ROWS ONLY);
+
+select * from (select STATUS from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE DESC FETCH FIRST 1 ROWS ONLY);
+
+---select DAY_PERIOD_TYPE,CYCLE_CODE,STATUS,RELEASE_DATE_TIME from LATEP.MARGIN_RUN where BUSINESS_DATE='25-OCT-2022' AND CYCLE_CODE IS NULL AND DAY_PERIOD_TYPE='EOD' order by RUN_DATE;
+
+
+spool off
+exit;
+EOF
+)
+
+#echo "select STATUS from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE DESC FETCH FIRST 1 ROWS ONLY"
+
+#echo "select DAY_PERIOD_TYPE,CYCLE_CODE,STATUS from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE"
+
+
+echo $V_MR_STATUS_B
+status=$(cat $SEND_TO_CSV | awk '$1=$1')
+rm -rf $SEND_TO_CSV
+
+#echo $pre $post $status
+
+	if [[ $status == SUCCESS ]] ; then
+	lat_color=GREEN
+	lat_msg="DONE"
+	
+	elif [[ $status == MARGIN_VARIATION_OK ]] ; then
+	lat_color=ORANGE
+	lat_msg="MV OK"
+
+	elif [[ $status == MARGIN_VARIATION_NOK ]] ; then
+	lat_color=RED
+	lat_msg="MVNOK"
+
+	elif [[ $status == MARGIN_VARIATION_FAILED ]] ; then
+	lat_color=RED
+	lat_msg="MV FALD"
+	msg=""
+	
+	elif [[ $status == WAITING_FOR_TIMER ]] ; then
+	lat_color=ORANGE
+	lat_msg="W8 TMR"
+
+	elif [[ $status == GENERATING_REPORTS ]] ; then
+	lat_color=ORANGE
+	lat_msg="GN REPRT"
+
+	elif [[ $status == WAITING_FOR_PREV_MARGIN_RUN ]] ; then
+	lat_color=ORANGE
+	lat_msg="W8 PR MR"
+
+	elif [[ $status == WAITING_FOR_EOI ]] ; then
+	lat_color=ORANGE
+	lat_msg="W8 EOI"
+
+	elif [[ $status == MANUAL_RELEASE ]] ; then
+	lat_color=ORANGE
+	lat_msg="MAN REL"
+
+	elif [[ $status == HELD ]] ; then
+	lat_color=ORANGE
+	lat_msg="HELD"
+	
+	elif [[ $status == STARTED ]] ; then
+	lat_color=ORANGE
+	lat_msg="STRTDL"
+
+	fi
+
+#echo FROM FUNCTION $pre$post $lat_color $lat_msg
+
+}
+
+
+
+
+
+func_get_time_from_lat()
+{
+
+#echo $1
+pre=$(echo $1 | cut -c -3)
+post=$(echo $1 | cut -c 4-)
+#echo $pre $post
+#pre=E2D
+	if [[ $pre == EOD ]] ; then
+	  cy_code="AND CYCLE_CODE IS NULL"
+      	 # echo EOD
+
+	elif [[ $pre == ITD ]]; then
+          cy_code="AND CYCLE_CODE=$post"
+         # echo ITD
+
+	else
+		cy_code="AND CYCLE_CODE=1"
+	#	echo SUB RUNS
+	
+	fi
+
+
+#echo "select STATUS from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE"
+
+#gets db credentials extracted from config file
+grep -h "LAT_DB_Details" $SCR_LOC/*.config > $SCR_LOC/config/db_details
+
+#Reads the config file for the db credentials and other relavent details
+while IFS=',' read -r col CREDENTIAL VALUES; do
+  declare "$CREDENTIAL"="$VALUES"
+done < $SCR_LOC/config/db_details
+
+SEND_TO_CSV="$SCR_LOC/config/query_tmp.csv"
+
+##Check Margin Status
+V_MR_STATUS_B=$(sqlplus -s "$USER_NAME/$PASSWORD@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(Host=$HOST)(Port=$PORT))(CONNECT_DATA=(SERVICE_NAME=$SERVICE_NAME)))" << EOF
+
+set serveroutput on
+set heading off
+set colsep ,
+SET ECHO OFF
+SET VERIFY OFF
+SET TRIMSPOOL ON
+SET TRIMOUT ON
+SET LINESIZE 9999
+SET PAGESIZE 0
+SET FEEDBACK OFF
+SET TIMING OFF
+SET TIME OFF
+SET LONG 10000
+WHENEVER OSERROR EXIT FAILURE
+spool $SEND_TO_CSV
+
+select * from (select LAST_UPDATED_DATE_TIME from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE DESC FETCH FIRST 1 ROWS ONLY);
+spool off
+exit;
+EOF
+)
+
+#echo "select STATUS from LATEP.MARGIN_RUN where BUSINESS_DATE='$CURRENT_DATE' $cy_code AND DAY_PERIOD_TYPE='$pre' order by RUN_DATE DESC FETCH FIRST 1 ROWS ONLY"
+
+
+#echo $V_MR_STATUS_B
+status_t=$(cat $SEND_TO_CSV | awk '$1=$1')
+rm -rf $SEND_TO_CSV
+
+value=$(echo $status_t | awk '{print $2}')
+
+ if [ -z $value ]; then lat_time="-";else lat_time=$(echo $status_t | awk '{print $2}' | awk -F. '{print $1":"$2}');fi
+
+
+#echo $lat_time
+
+}
+
+
+
+
+
+
+
+#Read from CSV query_out and sets status & output msg
+
+while IFS=, read type r_time r_file status
+do
+
+	#check if the Margin type is ITD or EOD Subs
+    if [[ $type == ITD ]] ; then
+	run=$(echo $r_file| grep ITD | cut -d , -f3 | awk -F '/' '{print $5}' | sed "s/CBE1-FO-MLM_POSITION_CASH_UCSCASH_MA_//g" | awk -F '_20' '{print $1}')
+
+    else
+	run=$type
+
+    fi
+
+
+	#Shapeup the DB queried time into HH:MM
+	db_r_time=$(echo $r_time | cut -d , -f2 | awk '{print $2}' | awk -F . '{print $1$2}')
+	db_s_time=$(echo $r_time | cut -d , -f2 | awk '{print $2}' | awk -F . '{print $1":"$2}')
+
+		if [[ ${CURRENT_TIME#0} -le ${db_r_time#0} ]]
+		then
+			msg=""
+		else
+			msg="DR"
+		fi
+
+echo $run $status STATUS
+	#Check the Margin status and assign with relavent color representation
+    if [[ $status == FAILED ]] ; then
+	color=RED
+	db_s_time="FALD"
+	msg=""
+
+        #func_get_from_lat $run
+        #db_s_time="$lat_msg"
+        #msg=""
+        #color="$lat_color"
+
+
+	
+	elif [[ $status == CANCELLED ]] ; then
+	color=RED
+	db_s_time="CANCLD"
+	msg=""
+
+        #func_get_from_lat $run
+        #db_s_time="$lat_msg"
+        #msg=""
+        #color="$lat_color"
+
+
+	elif [[ $status == COMPLETED ]] ; then
+	#echo $run
+	func_get_from_lat $run
+	func_get_time_from_lat $run 
+	db_s_time="$lat_msg"
+	msg=""
+	color="$lat_color"	
+
+
+	elif [[ $status == STARTED ]] ; then
+	color=ORANGE
+	db_s_time="STRTD"
+	msg=""
+
+	elif [[ $status == APPROVED ]] ; then
+#	color=GREEN
+
+        func_get_from_lat $run
+	func_get_time_from_lat $run
+	
+		if [[ $lat_msg == "DONE" ]] ; then
+			color=GREEN
+			db_s_time="$lat_time"
+
+		else
+
+        	db_s_time="$lat_time"
+	        msg=""
+        	color="$lat_color"
+
+		fi
+
+
+    else
+
+	color=BLANK
+
+    fi
+
+#create an intermediate file with all the run details
+echo $run,$msg $db_s_time,$status,$color | tee -a $SCR_LOC/config/rail_out >/dev/null
+
+
+done < $SCR_LOC/config/query_out
+
+
+cat $SCR_LOC/config/rail_out 
+
+#Checks if there is time left for the run based on *.config file and changes color and status accordingly
+
+echo "Condition,Time,Status,Color" | tee $SCR_LOC/results/itd_run_results.csv > /dev/null
+
+#checks if the rail_out file avialable (if the db has no queries to output (i.e before E2C/E2D), there wont be any rail_out file
+file="$SCR_LOC/config/rail_out"
+
+if [ -e "$file" ]; then
+
+	#Get the MARGIN RUN list from the config
+	rail=$(grep -h "MARGIN" $SCR_LOC/saecl_itd_check.config | awk -F, '{print $2}')
+		
+	#idividually analyse every Run details and get only the latest Run
+	for i in $rail; 
+		do  
+		
+			r_time=$(grep -h MARGIN $SCR_LOC/saecl_itd_check.config | grep $i | awk -F, '{print $3}')
+			
+			if grep -q "$i" $SCR_LOC/config/rail_out; then
+				result=$(cat $SCR_LOC/config/rail_out | grep $i | tail -1);
+			else
+				g_time=$(date -d $r_time "+%H%M")
+				s_time=$(date -d $r_time "+%H:%M")
+		
+				if [[ ${CURRENT_TIME#0} -le ${g_time#0} ]]
+				then
+					color="BLANK"
+					msg="NR"
+				else
+					color="ORANGE"
+					msg="DL"
+				fi
+
+
+				#get the ITD TIme value from other config file to forecast the ITD run time
+				result=$(echo $i,$msg $s_time,NA,$color)
+			fi
+			
+			
+			echo $result | tee -a $SCR_LOC/results/itd_run_results.csv > /dev/null
+		done
+	
+                        cat $SCR_LOC/results/itd_run_results.csv | tr ',' '|' | column -t -s '|'
+
+rm -rf $file
+
+else
+
+`cat <<EOF> $SCR_LOC/results/itd_run_results.csv
+Condition,Time,Status,Color
+E2C,NA,NA,BLANK
+E2D,NA,NA,BLANK
+EBH,NA,NA,BLANK
+EBT,NA,NA,BLANK
+EOD,NA,NA,BLANK
+EOI,NA,NA,BLANK
+EST,NA,NA,BLANK
+ITD01,NA,NA,BLANK
+ITD02,NA,NA,BLANK
+ITD03,NA,NA,BLANK
+ITD04,NA,NA,BLANK
+ITD05,NA,NA,BLANK
+ITD06,NA,NA,BLANK
+ITD07,NA,NA,BLANK
+ITD08,NA,NA,BLANK
+ITD09,NA,NA,BLANK
+ITD10,NA,NA,BLANK
+EOF`
+
+
+
+fi
+
+
+
+
+echo ""
+echo ""
+echo "===============ALERTING===================="
+
+
+
+find $SCR_LOC/alert/ -type f -mmin +360 -delete
+
+results_file="$SCR_LOC/results/itd_run_results.csv"
+alerts=$(grep "RED" $results_file | cut -d, -f1,3 )
+
+
+if grep "RED" $results_file ; then
+
+alert_file="$SCR_LOC/alert/alert_mail_$(date +%H%M%S)"
+last_alert_file=$(find $SCR_LOC/alert -type f -exec ls -tr {} + | tail -1)
+echo last: $last_alert_file current: $alert_file
+#touch $alert_file
+echo "$alerts"| while IFS=, read run status
+do
+
+                        if grep  "$run" $last_alert_file; then
+                        
+				echo "$run available"
+			else
+				echo "$run alert_mail_send"
+#				touch $alert_file
+				echo $run | tee -a $alert_file > /dev/null
+				mail_body="Latest $run margin run $status, Please Check."
+				subject="Margin Run Impacted"
+						echo $email_ids |   tr ',' '\n' | while read email_id 
+						do
+							echo $mail_body | mailx -r "geneos_dashboard" -s "ECP PRD - $subject" $email_id > /dev/null               
+						done
+                        fi
+
+done
+
+echo -----------------
+cat $alert_file | sort -u
+
+
+
+else
+echo "exiting"
+exit
+
+fi
+
+
+#remove the config contrnt
+#rm -rf $SCR_LOC/config/rail_out 
+#echo "" | tee $SCR_LOC/config/db_details
+#echo "" | tee $SCR_LOC/config/query_out
+#echo "" | tee $SCR_LOC/config/rail_out
